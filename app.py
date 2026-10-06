@@ -1,23 +1,20 @@
 """
-Google Photos Next-Gen AI Memory Retrieval MVP
+Google Photos Next-Gen AI Memory Retrieval MVP - Self-Contained App
 Target Segment: Long-Term Life Archivists (5+ Years Tenure, 10,000+ Photos)
 Designed specifically to fulfill the strategic goal:
 'Increase the percentage of users who successfully retrieve a photo they remember but cannot precisely describe.'
 """
 
 import os
+import re
+import random
 import datetime
+import requests
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from dotenv import load_dotenv
-
-from agent.scrapers import fetch_all_platform_reviews, generate_benchmark_memory_dataset
-from agent.sentiment import process_dataframe_sentiment, extract_top_keywords
-from agent.research_agent import GooglePhotosResearchAgent
-from agent.export import convert_markdown_to_pdf
-from agent.photo_vault import search_photo_vault, parse_hazy_memory_query, PHOTO_VAULT
 
 load_dotenv()
 
@@ -174,11 +171,300 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ==============================================================================
+# PHOTO VAULT DATASET & AI RETRIEVAL ENGINE (SELF-CONTAINED)
+# ==============================================================================
+PHOTO_VAULT = [
+    {
+        "id": "photo_001",
+        "title": "Summer Cafe in Florence",
+        "date": "2019-06-14",
+        "year": 2019,
+        "location": "Florence, Italy",
+        "primary_subject": "Coffee & Conversation",
+        "background_objects": ["red wooden chair", "outdoor cafe table", "cobblestone street", "espresso cup"],
+        "clothing_cues": ["linen shirt", "sunglasses"],
+        "atmosphere": ["sunny", "summer", "outdoors", "relaxed"],
+        "bounding_box": "Red Wooden Chair detected at [x: 120, y: 180, w: 220, h: 310]",
+        "image_url": "https://images.unsplash.com/photo-1559925393-8be0ec4767c8?auto=format&fit=crop&w=800&q=80",
+        "description": "Sitting outdoors at a quiet street cafe in Florence. A vintage red wooden chair is visible right next to the table."
+    },
+    {
+        "id": "photo_002",
+        "title": "Cousin's Wedding Reception",
+        "date": "2018-11-20",
+        "year": 2018,
+        "location": "New Delhi, India",
+        "primary_subject": "Family Group Photo",
+        "background_objects": ["marigold flowers", "stage curtain", "string lights"],
+        "clothing_cues": ["green saree", "golden embroidery", "kurta"],
+        "atmosphere": ["festive", "evening", "wedding", "celebration"],
+        "bounding_box": "Green Silk Saree detected at [x: 80, y: 140, w: 300, h: 450]",
+        "image_url": "https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&w=800&q=80",
+        "description": "Mom and relatives at the wedding reception venue. She wore a traditional emerald green saree with gold borders."
+    },
+    {
+        "id": "photo_003",
+        "title": "Birthday Party at the Beach",
+        "date": "2021-08-05",
+        "year": 2021,
+        "location": "Santa Monica, California",
+        "primary_subject": "Children & Party Decor",
+        "background_objects": ["blue balloon", "ocean waves", "sand castle", "picnic blanket"],
+        "clothing_cues": ["blue swim trunks", "sun hat"],
+        "atmosphere": ["sunny", "beach", "outdoors", "birthday"],
+        "bounding_box": "Blue Party Balloon cluster detected at [x: 210, y: 60, w: 180, h: 220]",
+        "image_url": "https://images.unsplash.com/photo-1530103862676-de8c9debad1d?auto=format&fit=crop&w=800&q=80",
+        "description": "Sunny afternoon on Santa Monica beach celebrating a 5th birthday with blue balloons tied to the picnic setup."
+    },
+    {
+        "id": "photo_004",
+        "title": "Grandma's Secret Cookie Recipe",
+        "date": "2019-12-24",
+        "year": 2019,
+        "location": "Chicago, Illinois",
+        "primary_subject": "Document / Recipe Note",
+        "background_objects": ["handwritten index card", "flour dusting", "rolling pin", "wooden countertop"],
+        "clothing_cues": [],
+        "atmosphere": ["indoor", "cozy", "christmas baking"],
+        "bounding_box": "Handwritten Recipe Index Card detected at [x: 50, y: 90, w: 400, h: 280]",
+        "image_url": "https://images.unsplash.com/photo-1455390582262-044cdead277a?auto=format&fit=crop&w=800&q=80",
+        "description": "Vintage handwritten card with cursive ingredients for holiday cinnamon star cookies on a flour-dusted table."
+    },
+    {
+        "id": "photo_005",
+        "title": "Toddler Puddle Jumping in Rain",
+        "date": "2020-04-12",
+        "year": 2020,
+        "location": "Seattle, Washington",
+        "primary_subject": "Son Playing in Rain",
+        "background_objects": ["rain puddles", "wet pavement", "green park lawn"],
+        "clothing_cues": ["red raincoat", "yellow rubber boots"],
+        "atmosphere": ["rainy", "spring", "outdoors", "playful"],
+        "bounding_box": "Bright Red Raincoat & Yellow Boots detected at [x: 160, y: 110, w: 250, h: 380]",
+        "image_url": "https://images.unsplash.com/photo-1515694346937-94d85e41e6f0?auto=format&fit=crop&w=800&q=80",
+        "description": "Leo splashing into water puddles during a rainy afternoon walk in the park wearing his hooded red raincoat."
+    },
+    {
+        "id": "photo_006",
+        "title": "Winter Cabin Getaway",
+        "date": "2022-01-15",
+        "year": 2022,
+        "location": "Aspen, Colorado",
+        "primary_subject": "Mountain Landscape",
+        "background_objects": ["wooden log cabin", "snow covered pine trees", "smoke from chimney"],
+        "clothing_cues": ["heavy winter jacket", "beanie"],
+        "atmosphere": ["snowy", "winter", "cold", "cozy"],
+        "bounding_box": "Snow-Covered Wooden Log Cabin detected at [x: 100, y: 150, w: 450, h: 320]",
+        "image_url": "https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?auto=format&fit=crop&w=800&q=80",
+        "description": "Scenic view of a timber log cabin surrounded by heavy winter snow drifts and pine trees."
+    },
+    {
+        "id": "photo_007",
+        "title": "Car Brake Repair Receipt",
+        "date": "2021-05-18",
+        "year": 2021,
+        "location": "Austin, Texas",
+        "primary_subject": "Document / Invoice",
+        "background_objects": ["printed paper receipt", "steering wheel", "dashboard"],
+        "clothing_cues": [],
+        "atmosphere": ["indoor", "utility", "car service"],
+        "bounding_box": "Printed Itemized Invoice Document detected at [x: 70, y: 40, w: 380, h: 500]",
+        "image_url": "https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&w=800&q=80",
+        "description": "Printed itemized receipt from auto brake pad replacement held in front of car dashboard."
+    },
+    {
+        "id": "photo_008",
+        "title": "Terrace Pizza Dinner",
+        "date": "2018-07-22",
+        "year": 2018,
+        "location": "Lake Como, Italy",
+        "primary_subject": "Food & View",
+        "background_objects": ["pizza slice", "terrace balcony railing", "deep blue lake", "mountains"],
+        "clothing_cues": ["white summer shirt"],
+        "atmosphere": ["sunset", "outdoors", "vacation", "romantic"],
+        "bounding_box": "Wood-Fired Pizza on Outdoor Terrace Railing detected at [x: 110, y: 200, w: 320, h: 260]",
+        "image_url": "https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=800&q=80",
+        "description": "Eating fresh Margherita pizza on an outdoor terrace balcony overlooking Lake Como at golden hour."
+    },
+    {
+        "id": "photo_009",
+        "title": "Golden Retriever in Snow",
+        "date": "2021-02-10",
+        "year": 2021,
+        "location": "Minneapolis, Minnesota",
+        "primary_subject": "Dog Playing",
+        "background_objects": ["deep snow drift", "snowy fence", "bare winter trees"],
+        "clothing_cues": ["red dog harness"],
+        "atmosphere": ["snowy", "winter", "playful"],
+        "bounding_box": "Golden Retriever & Snow Drift detected at [x: 130, y: 120, w: 290, h: 310]",
+        "image_url": "https://images.unsplash.com/photo-1548199973-03cce0bbc87b?auto=format&fit=crop&w=800&q=80",
+        "description": "Max jumping through deep powder snow in the backyard during a February blizzard."
+    },
+    {
+        "id": "photo_010",
+        "title": "Late Night Campfire",
+        "date": "2019-09-08",
+        "year": 2019,
+        "location": "Yosemite National Park",
+        "primary_subject": "Friends & Fire",
+        "background_objects": ["glowing campfire embers", "camp tent", "starry sky", "wooden logs"],
+        "clothing_cues": ["flannel shirt", "hoodie"],
+        "atmosphere": ["night", "outdoors", "camping", "warm fire"],
+        "bounding_box": "Campfire Flame & Embers detected at [x: 180, y: 210, w: 240, h: 250]",
+        "image_url": "https://images.unsplash.com/photo-1508873696983-2df515122519?auto=format&fit=crop&w=800&q=80",
+        "description": "Gathered around glowing campfire sparks under a starry night sky in Yosemite forest."
+    }
+]
+
+
+def parse_hazy_memory_query(query: str):
+    q_lower = query.lower().strip()
+    years_found = [int(y) for y in re.findall(r'\b(201[5-9]|202[0-6])\b', q_lower)]
+    
+    relative_time = None
+    if "years ago" in q_lower or "year ago" in q_lower:
+        match = re.search(r'(\d+)\s*years?\s*ago', q_lower)
+        if match:
+            n_years = int(match.group(1))
+            current_yr = datetime.datetime.now().year
+            target_yr = current_yr - n_years
+            relative_time = f"Approx. {target_yr-1} - {target_yr+1}"
+    elif years_found:
+        relative_time = f"Explicit Year Window: {', '.join(str(y) for y in years_found)}"
+    
+    sensory_keywords = [
+        "red chair", "chair", "green saree", "saree", "blue balloon", "balloon",
+        "recipe", "handwritten", "red raincoat", "raincoat", "puddle", "snow", "cabin",
+        "receipt", "invoice", "pizza", "terrace", "dog", "retriever", "campfire", "fire"
+    ]
+    detected_sensory = [kw for kw in sensory_keywords if kw in q_lower]
+
+    context_keywords = ["cafe", "wedding", "beach", "birthday", "kitchen", "park", "mountain", "car", "lake", "camping"]
+    detected_context = [kw for kw in context_keywords if kw in q_lower]
+
+    return {
+        "raw_query": query,
+        "detected_sensory_cues": detected_sensory if detected_sensory else ["general visual scene"],
+        "detected_context": detected_context if detected_context else ["any setting"],
+        "inferred_time_window": relative_time or "Elastic Life Timeline (2018 - 2023)"
+    }
+
+
+def search_photo_vault(query: str, ai_enabled: bool = True):
+    if not query or not query.strip():
+        default_results = []
+        for photo in PHOTO_VAULT:
+            p_entry = photo.copy()
+            p_entry["match_score"] = 85 if ai_enabled else 40
+            p_entry["match_reasons"] = ["Vault photo match"] if ai_enabled else ["Standard date index"]
+            default_results.append(p_entry)
+        return sorted(default_results, key=lambda x: x["date"], reverse=True)
+
+    q_lower = query.lower().strip()
+    q_words = set(q_lower.split())
+
+    if not ai_enabled:
+        trad_results = []
+        for photo in PHOTO_VAULT:
+            text_corp = f"{photo['title']} {photo['location']} {photo['primary_subject']}".lower()
+            exact_match = any(w in text_corp for w in q_words if len(w) >= 2) or (str(photo["year"]) in query)
+            if exact_match:
+                p_entry = photo.copy()
+                p_entry["match_score"] = 45
+                p_entry["match_reasons"] = ["Basic title/location string match"]
+                trad_results.append(p_entry)
+        return sorted(trad_results, key=lambda x: x["match_score"], reverse=True)
+
+    scored_photos = []
+    for photo in PHOTO_VAULT:
+        score = 0
+        reasons = []
+
+        for bg in photo["background_objects"]:
+            if any(w in bg.lower() for w in q_words if len(w) >= 2):
+                score += 35
+                reasons.append(f"Matched peripheral background object: '{bg}'")
+                break
+
+        for cl in photo["clothing_cues"]:
+            if any(w in cl.lower() for w in q_words if len(w) >= 2):
+                score += 30
+                reasons.append(f"Matched clothing cue: '{cl}'")
+                break
+
+        for at in photo["atmosphere"]:
+            if at.lower() in q_words:
+                score += 20
+                reasons.append(f"Matched setting/atmosphere: '{at}'")
+
+        text_corp = f"{photo['title']} {photo['description']} {photo['location']} {photo['primary_subject']} {' '.join(photo['background_objects'])} {' '.join(photo['clothing_cues'])} {' '.join(photo['atmosphere'])}".lower()
+        for w in q_words:
+            if len(w) >= 2 and w in text_corp:
+                score += 15
+                reasons.append(f"Matched visual term: '{w}'")
+
+        if str(photo["year"]) in query:
+            score += 20
+            reasons.append(f"Matched relative year: {photo['year']}")
+
+        final_score = min(98, max(15 if not reasons else score, 50 if reasons else 10))
+
+        photo_entry = photo.copy()
+        photo_entry["match_score"] = final_score
+        photo_entry["match_reasons"] = list(set(reasons)) if reasons else ["General visual similarity"]
+        scored_photos.append(photo_entry)
+
+    return sorted(scored_photos, key=lambda x: x["match_score"], reverse=True)
+
+
+# ==============================================================================
+# BENCHMARK DATASET GENERATOR (SELF-CONTAINED)
+# ==============================================================================
+def generate_benchmark_memory_dataset():
+    return [
+        {
+            "id": "bench_01", "platform": "Google Play Store", "user_name": "Marcus Vance",
+            "rating": 2, "title": "Background object search returned zero results",
+            "review_text": "I distinctly remembered a photo of my son sitting next to a red wooden chair at a cafe, but I forgot what year it was taken or what city we were in. I searched 'red chair' and 'wooden chair', but Google Photos returned zero results because the chair wasn't tagged in the background. I spent 2 hours scrolling in frustration.",
+            "date": "2026-10-01", "thumbs_up": 85, "version": "6.72.0", "url": "https://play.google.com/store/apps/details?id=com.google.android.apps.photos",
+            "primary_topic": "Visual & Object Cues", "retrieval_status": "Retrieval Failure (Memory Breakdown)"
+        },
+        {
+            "id": "bench_02", "platform": "Google Play Store", "user_name": "Priya Sharma",
+            "rating": 5, "title": "Found photo by searching for clothing color!",
+            "review_text": "I wanted to find a picture of my mom at a wedding. I had no clue what year it was, but I distinctly remembered she wore a green saree. I typed 'green dress wedding' and Google Photos found it in the top 5 results! Amazing visual object recognition.",
+            "date": "2026-09-30", "thumbs_up": 77, "version": "6.72.0", "url": "https://play.google.com/store/apps/details?id=com.google.android.apps.photos",
+            "primary_topic": "Visual & Object Cues", "retrieval_status": "Successful Retrieval"
+        },
+        {
+            "id": "bench_03", "platform": "Apple App Store", "user_name": "David_K",
+            "rating": 1, "title": "Can't search by secondary objects in photo",
+            "review_text": "I knew I had a photo with a blue balloon at a birthday party 3 years ago. Searching 'blue balloon' gave me completely unrelated wallpapers. Computer vision seems to only index the main person and ignores secondary background items.",
+            "date": "2026-09-29", "thumbs_up": 42, "version": "6.71", "url": "https://apps.apple.com/us/app/google-photos/id586683244",
+            "primary_topic": "Visual & Object Cues", "retrieval_status": "Retrieval Failure (Memory Breakdown)"
+        },
+        {
+            "id": "bench_04", "platform": "Apple App Store", "user_name": "Claire_B",
+            "rating": 2, "title": "Scrolling through 15,000 photos because date memory faded",
+            "review_text": "I remembered taking a photo of a special handwritten recipe. I knew it was taken somewhere between 2018 and 2020 when I lived in Chicago, but I had no idea what month. Search forced me to guess exact keywords or scroll endlessly through 15,000 photos. We need visual timeline filters based on life events!",
+            "date": "2026-09-28", "thumbs_up": 110, "version": "6.71", "url": "https://apps.apple.com/us/app/google-photos/id586683244",
+            "primary_topic": "Temporal Uncertainty", "retrieval_status": "Retrieval Failure (Memory Breakdown)"
+        },
+        {
+            "id": "bench_05", "platform": "Reddit", "user_name": "u/MemoryResearch_99",
+            "rating": 2, "title": "Why human visual memory fails against traditional search engines",
+            "review_text": "When human memory fades, people remember sensory fragments: 'it was raining', 'she wore a yellow hat', 'there was a dog in the background'. But search engines expect structured metadata (date, location, exact object tag). If Google Photos doesn't bridge this semantic gap, users spend 30+ minutes scrolling in vain.",
+            "date": "2026-09-27", "thumbs_up": 320, "version": "Comments: 94", "url": "https://www.reddit.com/r/googlephotos/comments/memory_retrieval_gap",
+            "primary_topic": "Temporal Uncertainty", "retrieval_status": "Retrieval Failure (Memory Breakdown)"
+        }
+    ]
+
+
 # Version-controlled Session State Initialization
-DATASET_KEY = "single_page_memory_dataset_v7_300plus"
+DATASET_KEY = "single_page_memory_dataset_v8_self_contained"
 if "dataset_key" not in st.session_state or st.session_state.dataset_key != DATASET_KEY:
-    initial_df = pd.DataFrame(generate_benchmark_memory_dataset())
-    st.session_state.df = process_dataframe_sentiment(initial_df)
+    st.session_state.df = pd.DataFrame(generate_benchmark_memory_dataset())
     st.session_state.dataset_key = DATASET_KEY
 
 if "search_query_val" not in st.session_state:
@@ -203,8 +489,7 @@ with st.sidebar:
             "📱 Google Photos UI (AI Retrieval MVP)",
             "⚡ AI Impact Comparison (Before vs After)",
             "🧪 Part 6: MVP User Testing Results (3 Usability Sessions)",
-            "📊 Executive Telemetry & Scraper Insights",
-            "🤖 Cognitive AI Strategy Assistant"
+            "📊 Executive Telemetry & Scraper Insights"
         ],
         index=0
     )
@@ -214,62 +499,8 @@ with st.sidebar:
     ai_toggle_switch = st.toggle("Enable Gemini Multimodal AI", value=st.session_state["ai_enabled_state"])
     st.session_state["ai_enabled_state"] = ai_toggle_switch
 
-    st.divider()
-    api_key_input = st.text_input(
-        "OpenAI API Key",
-        value=os.getenv("OPENAI_API_KEY", ""),
-        type="password",
-        help="Optional: Enter your OpenAI API key for GPT-4o synthesis."
-    )
 
-    model_choice = st.selectbox("AI Agent Model", options=["gpt-4o", "gpt-4o-mini"], index=0)
-
-    st.divider()
-    st.subheader("⚡ Live Scraper Controls (300+ Reviews)")
-    
-    gp_cnt = st.slider("Play Store Memory Limit", min_value=100, max_value=500, value=350, step=50)
-    ios_cnt = st.slider("App Store Memory Limit", min_value=50, max_value=300, value=150, step=50)
-    reddit_cnt = st.slider("Reddit Memory Limit", min_value=20, max_value=100, value=50, step=10)
-    
-    strict_filter = st.checkbox("Strict Memory Keyword Filter", value=True)
-    include_benchmark = st.checkbox("Include Curated Benchmark Dataset", value=True)
-
-    preset_300 = st.button("🚀 Scrape 300+ Live Reviews Now")
-    preset_500 = st.button("⚡ Scrape 500+ Deep Dataset Now")
-
-    scrape_target = None
-    if preset_300:
-        scrape_target = (350, 150, 50)
-    elif preset_500:
-        scrape_target = (550, 200, 100)
-
-    if st.button("🚀 Scrape Live Memory Data (Custom Sliders)", type="primary") or scrape_target:
-        target_gp, target_ios, target_red = scrape_target if scrape_target else (gp_cnt, ios_cnt, reddit_cnt)
-        with st.spinner(f"Scraping live reviews (Target: {target_gp + target_ios + target_red}+)..."):
-            scraped_df = fetch_all_platform_reviews(
-                gp_count=target_gp,
-                ios_count=target_ios,
-                reddit_count=target_red,
-                include_samples=include_benchmark,
-                filter_memory=strict_filter
-            )
-            processed_df = process_dataframe_sentiment(scraped_df)
-            st.session_state.df = processed_df
-            st.session_state.dataset_key = DATASET_KEY
-            st.success(f"Successfully scraped & loaded {len(processed_df)} live reviews!")
-            st.rerun()
-
-    if st.button("🔄 Reset to Benchmark Dataset"):
-        st.session_state.df = process_dataframe_sentiment(pd.DataFrame(generate_benchmark_memory_dataset()))
-        st.session_state.dataset_key = DATASET_KEY
-        st.success("Reset to 100% memory benchmark dataset!")
-        st.rerun()
-
-
-# Initialize Research Agent
-agent = GooglePhotosResearchAgent(api_key=api_key_input, model=model_choice)
-
-# Header Title Banner (Google Photos Design Language with AI Status Badge)
+# Header Title Banner (Google Photos Design Language)
 ai_status_html = (
     '<div class="ai-badge-on">✨ Gemini AI Engine: ENABLED</div>'
     if st.session_state["ai_enabled_state"] else
@@ -362,7 +593,6 @@ if app_mode == "📱 Google Photos UI (AI Retrieval MVP)":
             horizontal=True
         )
 
-    # Apply Disambiguation Filters
     if sel_visual_chip != "All Visual Cues":
         filtered = [p for p in results if any(sel_visual_chip.lower() in bg.lower() for bg in p["background_objects"]) or any(sel_visual_chip.lower() in cl.lower() for cl in p["clothing_cues"])]
         if filtered:
@@ -374,7 +604,6 @@ if app_mode == "📱 Google Photos UI (AI Retrieval MVP)":
         if filtered_year:
             results = filtered_year
 
-    # AI Reasoning Breakdown Box
     if is_ai_on:
         st.markdown(f"""
         <div class="ai-parsing-box">
@@ -393,7 +622,6 @@ if app_mode == "📱 Google Photos UI (AI Retrieval MVP)":
         </div>
         """, unsafe_allow_html=True)
 
-    # Performance Impact Metrics
     m1, m2, m3, m4 = st.columns(4)
     top_match = results[0] if results else None
     top_score = top_match.get("match_score", 85) if top_match else 0
@@ -409,7 +637,6 @@ if app_mode == "📱 Google Photos UI (AI Retrieval MVP)":
 
     st.divider()
 
-    # FEATURE 2: SCENE CLUSTERS VIEW vs GRID GALLERY VIEW
     if view_layout == "Scene Clusters View (Eliminates Scrolling)":
         st.subheader("📂 Memory Scene Clusters (Grouped by Context to End Scrolling Paralysis)")
         
@@ -440,7 +667,6 @@ if app_mode == "📱 Google Photos UI (AI Retrieval MVP)":
                         </div>
                         """, unsafe_allow_html=True)
     else:
-        # Google Photos Grid Gallery
         st.subheader(f"🖼️ Google Photos Grid Results for: \"{query_to_run}\" ({len(results)} photos found)")
         
         if not results:
@@ -587,23 +813,6 @@ elif app_mode == "🧪 Part 6: MVP User Testing Results (3 Usability Sessions)":
         </div>
         """, unsafe_allow_html=True)
 
-    st.divider()
-
-    st.subheader("💡 Iteration Plan & Key Learnings for Next Version (v1.1)")
-    
-    st.markdown("""
-    1. **Learning 1: Transparent Rationale Builds Trust**
-       - Users expressed high delight when seeing *why* computer vision matched their query (the spatial bounding box badge).
-       - *Next Action*: Add interactive bounding box highlighter directly over the photo canvas in v1.1.
-
-    2. **Learning 2: Scene Clustering Eliminates Friction**
-       - 100% of tested users preferred the **Scene Clusters View** over flat chronological grids when date memory was hazy.
-       - *Next Action*: Make Scene Cluster View the default view layout for queries containing relative temporal words (*"sometime in college"*, *"a few years ago"*).
-
-    3. **Learning 3: Auto-Disambiguation Prompt Chips**
-       - When a user types a single vague word (*"dress"* or *"car"*), auto-suggest sensory sub-filters (*"green dress"*, *"car receipt"*).
-    """)
-
 
 # ==============================================================================
 # MODE 4: EXECUTIVE TELEMETRY & SCRAPER INSIGHTS
@@ -664,85 +873,3 @@ elif app_mode == "📊 Executive Telemetry & Scraper Insights":
             )
             fig_status.update_layout(xaxis_title="", yaxis_title="Scenarios", margin=dict(t=30, b=0))
             st.plotly_chart(fig_status, use_container_width=True)
-
-
-# ==============================================================================
-# MODE 4: COGNITIVE AI STRATEGY ASSISTANT & EXPORTER
-# ==============================================================================
-elif app_mode == "🤖 Cognitive AI Strategy Assistant":
-    
-    st.markdown('<div class="section-title">🤖 Cognitive AI Research Assistant & Strategy Exporter</div>', unsafe_allow_html=True)
-    st.markdown("Ask research questions about visual memory retrieval, search friction, and cognitive mental models.")
-
-    st.write("**Strategic Research Prompt Shortcuts:**")
-    p_col1, p_col2, p_col3, p_col4 = st.columns(4)
-
-    prompt_trigger = None
-    with p_col1:
-        if st.button("🎨 Visual Object Search Friction"):
-            prompt_trigger = "Why do searches based on background visual objects (like a red chair or specific clothing) frequently fail?"
-    with p_col2:
-        if st.button("⏳ Temporal Scrolling Paralysis"):
-            prompt_trigger = "How does fading date memory lead to scrolling paralysis, and how can we fix it?"
-    with p_col3:
-        if st.button("🎯 4 High-Impact Opportunities"):
-            prompt_trigger = "What are the 4 high-impact product opportunities to increase successful photo retrieval?"
-    with p_col4:
-        if st.button("💬 Ask Photos AI Impact"):
-            prompt_trigger = "How does Ask Photos Gemini integration bridge human natural memory vs traditional keyword search?"
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    user_query = st.chat_input("Ask about visual memory retrieval, search friction, or product opportunities...")
-    if prompt_trigger:
-        user_query = prompt_trigger
-
-    if user_query:
-        st.session_state.chat_history.append({"role": "user", "content": user_query})
-        with st.chat_message("user"):
-            st.markdown(user_query)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Analyzing memory retrieval dataset and synthesizing cognitive UX insights..."):
-                response_text = agent.query(user_query, st.session_state.df)
-                st.markdown(response_text)
-
-        st.session_state.chat_history.append({"role": "assistant", "content": response_text})
-
-    st.divider()
-
-    st.markdown('<div class="section-title">🎯 Section 4: Strategic Product Opportunity Report</div>', unsafe_allow_html=True)
-
-    if st.button("✨ Generate Full Product Strategy Report"):
-        with st.spinner("Synthesizing strategic opportunity report..."):
-            report_markdown = agent.generate_full_report(st.session_state.df)
-            st.session_state.generated_report = report_markdown
-
-    if "generated_report" in st.session_state:
-        st.markdown("---")
-        st.markdown(st.session_state.generated_report)
-        st.markdown("---")
-
-        r_col1, r_col2 = st.columns(2)
-        with r_col1:
-            st.download_button(
-                "📥 Download Strategy Report (Markdown .md)",
-                data=st.session_state.generated_report,
-                file_name="Google_Photos_Memory_Retrieval_Strategy_Report.md",
-                mime="text/markdown"
-            )
-        with r_col2:
-            try:
-                pdf_bytes = convert_markdown_to_pdf(st.session_state.generated_report)
-                st.download_button(
-                    "📄 Download Strategy Report (PDF .pdf)",
-                    data=pdf_bytes,
-                    file_name="Google_Photos_Memory_Retrieval_Strategy_Report.pdf",
-                    mime="application/pdf"
-                )
-            except Exception as e:
-                st.warning(f"PDF export warning: {e}")
